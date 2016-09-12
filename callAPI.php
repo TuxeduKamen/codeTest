@@ -1,19 +1,22 @@
 <?php
 
-	// get the parameter from URL
+	//---------------------------------------------------------------------A. Declare and initialize global variables for this page
+	//---------------------------------------------------------------------A.1 Fetch the values from the calling page
 	$streetAddress = $_REQUEST["theStreet"];
 	$cityAddress = $_REQUEST["theCity"];
 	$stateAddress = $_REQUEST["theState"];
+	
+	//---------------------------------------------------------------------A.2 Declare other variables
+	date_default_timezone_set("America/Los_Angeles");
 	$id = "NEW";
-	$zipAddress = "";
+	$zipAddress = "10000";
 	$validFlag = 1;
 	$errorDesc = "";
-	$validationSource = "";
-	date_default_timezone_set("America/Los_Angeles");
-
-	//check against API
-	
-	//if valid
+	$validationSource = "none";
+	$validatedUSPS = "N";
+								
+	//---------------------------------------------------------------------B check against API
+	//---------------------------------------------------------------------B.1 Check if address is valid (move error checking role to calling page? or this page?)
 	if ((strlen(trim($streetAddress)))>0)
 		{
 			$validFlag = 1;	
@@ -21,7 +24,7 @@
 	else
 		{
 			$validFlag = 0;
-			$errorDesc = $errorDesc . "\\n wrong street address";
+			$errorDesc = $errorDesc . "wrong street address.";
 		}
 	if ((strlen(trim($cityAddress)))>0)
 		{
@@ -30,7 +33,7 @@
 	else
 		{
 			$validFlag = 0;
-			$errorDesc = $errorDesc . "\\n wrong city address";
+			$errorDesc = $errorDesc . "wrong city address.";
 		}
 	if ((strlen(trim($stateAddress)))>0)
 		{
@@ -39,128 +42,78 @@
 	else
 		{
 			$validFlag = 0;
-			$errorDesc = $errorDesc . "\\n wrong state address";
+			$errorDesc = $errorDesc . "wrong state address.";
 		}
 	
-	if ($validFlag == 1) //check SmartysStreet
+	//---------------------------------------------------------------------B.2 Submit to SmartysStreet if address seems ok
+	if ($validFlag == 1) 
 		{
-
+			require_once 'mrSmartysChecker.php';
+			$mrAPI = new mrSmartysChecker(); //create an object Mr. API
+			$mrAPI->set_rawStreet($streetAddress);
+			$mrAPI->set_rawCity($cityAddress);
+			$mrAPI->set_rawState($stateAddress);
 			$authId = urlencode("cc42450d-7f15-a49a-8075-a5b19a8db50a");
 			$authToken = urlencode("JCutMMLdfzVVmhrs9EiB");
-			$rawStreet = urlencode($streetAddress); 
-			$rawCity = urlencode($cityAddress);
-			$rawState = urlencode($stateAddress);
-			$apiRequest = "https://api.smartystreets.com/street-address/?street={$rawStreet}&city={$rawCity}&state={$rawState}&auth-id={$authId}&auth-token={$authToken}";
-			$apiResponseString = file_get_contents($apiRequest);
-			$apiResponse = json_decode($apiResponseString, true);
-			$cacheFile = 'cache' . DIRECTORY_SEPARATOR . md5($apiRequest); // transpose url into string and make it the cache filename ex. cache/abcdef123456...
-
-			if (file_exists($cacheFile)) // yes cache
+			$mrAPI->set_authId($authId);
+			$mrAPI->set_authToken($authToken);
+			$mrAPI->set_apiRequest();
+			$mrAPI->validate();
+			$apiResponse = $mrAPI->get_apiResponse();
+			$validFlag = $mrAPI->get_validFlag();
+			if ($validFlag==0)
 				{
-        				$cacheTime = filectime($cacheFile);
-
-        				// return cached data
-        				if ($cacheTime > strtotime('-60 minutes')) 
-						{
-            						$apiResponse = json_decode(file_get_contents($cacheFile),true);
-							//check if response is valid
-							if(isset($apiResponse[0])) 
-								{
-									$zipAddress = $apiResponse[0]['components']['zipcode'];
-									$validatedUSPS = $apiResponse[0]['analysis']['dpv_match_code'];
-									$validationSource = "cache";
-									$validFlag = 1;
-								}
-							else
-								{
-									$validFlag = 0;
-									$errorDesc = $errorDesc . "\\n cached SmartysStreets did not verify address";
-								}
-        					}
-					else
-						{
-				        		// delete cache file if old
-		        				unlink($cacheFile);
-						}
-    				}
-			else // no cache
-				{		
-					//check if response is valid
-					if(isset($apiResponse[0])) 
-						{
-							$zipAddress = $apiResponse[0]['components']['zipcode'];
-							$validatedUSPS = $apiResponse[0]['analysis']['dpv_match_code'];
-							$validationSource = "API";
-						}
-					else
-						{
-							$validFlag = 0;
-							$errorDesc = $errorDesc . "\\n SmartysStreets did not verify address";
-						}
-					
-					//create cache file for this request
-    					$fh = fopen($cacheFile, 'w');
-		    			fwrite($fh, $apiResponseString);
-		    			fclose($fh);
+					$errorDesc = $errorDesc . $mrAPI->get_errorDesc();
 				}
 		}
-
-	if ($validFlag == 1) //add to database
-		{
-			//insert to database
-			$servername = "localhost";
-			$username = "root";
-			$password = "123Caputdracunis!";
-			$dbname = "codetest";
-
-			// Create connection
-			$conn = new mysqli($servername, $username, $password, $dbname);
-			// Check connection
-			if ($conn->connect_error) 
+	//---------------------------------------------------------------------C Process Good Address
+	if ($validFlag == 1)
+		{	
+			$streetAddress = $mrAPI->get_rawStreet();
+			$cityAddress = $mrAPI->get_rawcity();
+			$stateAddress = $mrAPI->get_rawstate();
+			$zipAddress = $mrAPI->get_rawZip();
+			$validatedUSPS = $mrAPI->get_validatedUSPS();
+			$validationSource = $mrAPI->get_validationSource();
+	//---------------------------------------------------------------------C.1 Add to database
+			try
 				{
-			    		die("Connection failed: " . $conn->connect_error);
-					//$errorDesc = $errorDesc . "\\n Connection failed";
-				} 
+					$db = new PDO('mysql:host=localhost;dbname=codeTest;charset=utf8mb4', 'codeTest', 'codeTest123');
+					$db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+					
+					// bind parameter fields to insert
+					$stmt = $db->prepare("INSERT INTO addressList (streetAddress, cityAddress, stateAddress, zipAddress ,dpv_match_code ,validation_source) VALUES (:streetAddress, :cityAddress, :stateAddress, :zipAddress, :dpv_match_code, :validation_source)");
+    					$stmt->bindParam(':streetAddress', $streetAddressR);
+    					$stmt->bindParam(':cityAddress', $cityAddressR);
+    					$stmt->bindParam(':stateAddress', $stateAddressR);
+					$stmt->bindParam(':zipAddress', $zipAddressR);
+					$stmt->bindParam(':dpv_match_code', $dpv_match_codeR);
+					$stmt->bindParam(':validation_source', $validation_sourceR);
 
-			$sql = "INSERT INTO addressList (streetAddress, cityAddress, stateAddress, zipAddress, dpv_match_code, validation_source) VALUES (\"" . $streetAddress . "\",\"" . $cityAddress . "\",\"" . $stateAddress . "\",\"" . $zipAddress . "\",\"" . $validatedUSPS ."\",\"" . $validationSource . "\")";
+    					$streetAddressR=$streetAddress;
+    					$cityAddressR=$cityAddress;
+    					$stateAddressR=$stateAddress;
+					$zipAddressR=$zipAddress;
+					$dpv_match_codeR=$validatedUSPS;
+					$validation_sourceR=$validationSource;
+    					$stmt->execute();
 
-			if ($conn->query($sql) === TRUE) 
-				{
-					//echo "Saved!";
-				} 
-			else 
-				{
-			    		echo "Error: " . $sql . "<br>" . $conn->error;
-					//$errorDesc = $errorDesc . "\\n Error in SQL";
 				}
-			$conn->close();
+			catch (PDOException $errDesc)
+				{
+					//$db->rollBack();
+			    		echo $errDesc->getMessage();
+				}
 
-			//append to table
-			echo "var table = document.getElementById(\"tableList\");";
-			echo "var row = table.insertRow(-1);";
-			echo "var cell1 = row.insertCell(0);";
-			echo "var cell2 = row.insertCell(1);";
-			echo "var cell3 = row.insertCell(2);";
-			echo "var cell4 = row.insertCell(3);";
-			echo "var cell5 = row.insertCell(4);";
-			echo "var cell6 = row.insertCell(5);";
-			echo "var cell7 = row.insertCell(6);";
-			echo "cell1.innerHTML = \"" .$id. "\";";
-			echo "cell2.innerHTML = \"" .$streetAddress. "\";";	
-			echo "cell3.innerHTML = \"" .$cityAddress. "\";";	
-			echo "cell4.innerHTML = \"" .$stateAddress. "\";";	
-			echo "cell5.innerHTML = \"" .$zipAddress. "\";";	
-			echo "cell6.innerHTML = \"" .$validatedUSPS. "\";";	
-			echo "cell7.innerHTML = \"" .$validationSource. "\";";	
 
-			//echo "alert(\"" . $apiResponse . "\");";	
-			//echo "alert(\"Saved!\");";	
-		
+	//---------------------------------------------------------------------C.2 Add to grid
+	        	echo json_encode(array('theID' => $id,'streetAddress'=> $mrAPI->get_rawStreet(),'cityAddress'=> $mrAPI->get_rawcity(),'stateAddress'=> $mrAPI->get_rawstate(),'zipAddress'=> $mrAPI->get_rawZip(),'validatedUSPS'=> $mrAPI->get_validatedUSPS(),'validationSource'=> $mrAPI->get_validationSource()));
+        	
 		}
 	else
 		{
 			//not valid
-			echo "alert(\"An error has occured:" . $errorDesc . "\");";	
+			echo "An error has occured:" . $errorDesc;	
 		}
 
 ?>
